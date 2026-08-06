@@ -23,6 +23,8 @@ class MainActivity : ComponentActivity() {
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
             blePeripheralManager.startAdvertising()
+        } else {
+            blePeripheralManager.startAdvertising()
         }
     }
 
@@ -60,6 +62,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // BEST PRACTICE: Clean up BLE resources when activity/app is destroyed.
         blePeripheralManager.stop()
     }
 }
@@ -71,6 +74,7 @@ fun PeripheralScreen(
 ) {
     val status by bleManager.status.collectAsState()
     val receivedMessage by bleManager.receivedMessage.collectAsState()
+    val isAdvertising by bleManager.isAdvertising.collectAsState()
     var messageToSend by remember { mutableStateOf("") }
 
     Column(
@@ -89,8 +93,23 @@ fun PeripheralScreen(
         Text("Received: $receivedMessage", style = MaterialTheme.typography.bodyLarge)
         Spacer(modifier = Modifier.height(32.dp))
 
-        Button(onClick = onStartAdvertisingClick) {
-            Text("Start Advertising")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            Button(
+                onClick = onStartAdvertisingClick,
+                enabled = !isAdvertising
+            ) {
+                Text("Start Advertising")
+            }
+            
+            Button(
+                onClick = { bleManager.stopAdvertising() },
+                enabled = isAdvertising
+            ) {
+                Text("Stop")
+            }
         }
         Spacer(modifier = Modifier.height(16.dp))
 

@@ -7,6 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,6 +24,8 @@ class MainActivity : ComponentActivity() {
     ) { permissions ->
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
+            bleCentralManager.startScanning()
+        } else {
             bleCentralManager.startScanning()
         }
     }
@@ -73,7 +77,13 @@ fun CentralScreen(
 ) {
     val status by bleManager.status.collectAsState()
     val receivedMessage by bleManager.receivedMessage.collectAsState()
+    val batteryLevel by bleManager.batteryLevel.collectAsState()
+    val discoveredServices by bleManager.discoveredServices.collectAsState()
+    
     var messageToSend by remember { mutableStateOf("") }
+    
+    val isScanning = status.startsWith("Scanning")
+    val isConnected = status.startsWith("Connected") || status.startsWith("Services discovered")
 
     Column(
         modifier = Modifier
@@ -83,26 +93,61 @@ fun CentralScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text("BLE Central", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text("Status: $status", style = MaterialTheme.typography.bodyLarge)
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         
-        Text("Received: $receivedMessage", style = MaterialTheme.typography.bodyLarge)
-        Spacer(modifier = Modifier.height(32.dp))
+        Text("Peripheral Battery: $batteryLevel", style = MaterialTheme.typography.bodyLarge)
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        Text("Received Message: $receivedMessage", style = MaterialTheme.typography.bodyLarge)
+        Spacer(modifier = Modifier.height(16.dp))
 
-        Button(onClick = onStartScanClick) {
-            Text("Start Scanning")
+        if (discoveredServices.isNotEmpty()) {
+            Text("Discovered Services:", style = MaterialTheme.typography.titleMedium)
+            LazyColumn(modifier = Modifier.height(80.dp)) {
+                items(discoveredServices) { service ->
+                    Text("- $service", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            Button(
+                onClick = onStartScanClick,
+                enabled = !isScanning && !isConnected
+            ) {
+                Text("Start Scanning")
+            }
+            
+            Button(
+                onClick = {
+                    if (isScanning) bleManager.stopScanning()
+                    else if (isConnected) bleManager.disconnect()
+                },
+                enabled = isScanning || isConnected
+            ) {
+                Text(if (isScanning) "Stop Scanning" else "Disconnect")
+            }
         }
         Spacer(modifier = Modifier.height(16.dp))
 
         OutlinedTextField(
             value = messageToSend,
             onValueChange = { messageToSend = it },
-            label = { Text("Message to Peripheral") }
+            label = { Text("Message to Peripheral") },
+            enabled = isConnected
         )
         Spacer(modifier = Modifier.height(8.dp))
-        Button(onClick = { bleManager.sendMessage(messageToSend) }) {
+        Button(
+            onClick = { bleManager.sendMessage(messageToSend) },
+            enabled = isConnected
+        ) {
             Text("Send Message")
         }
     }

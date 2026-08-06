@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
-@SuppressLint("MissingPermission") // در محیط واقعی پرمیشن‌ها حتما بررسی شوند
+@SuppressLint("MissingPermission")
 class BleCentralManager(private val context: Context) {
 
     private val bluetoothManager: BluetoothManager =
@@ -23,67 +23,114 @@ class BleCentralManager(private val context: Context) {
     
     private var bluetoothGatt: BluetoothGatt? = null
     
-    // استیت‌های مربوط به وضعیت اتصال و پیام دریافتی
     private val _status = MutableStateFlow("Idle")
     val status: StateFlow<String> = _status
 
     private val _receivedMessage = MutableStateFlow("No message yet")
     val receivedMessage: StateFlow<String> = _receivedMessage
 
+    // Flow to hold the battery level discovered and read from the peripheral
+    private val _batteryLevel = MutableStateFlow("Unknown")
+    val batteryLevel: StateFlow<String> = _batteryLevel
+
+    // Flow to list all discovered services
+    private val _discoveredServices = MutableStateFlow<List<String>>(emptyList())
+    val discoveredServices: StateFlow<List<String>> = _discoveredServices
+
     companion object {
-        // همان UUIDهایی که در بخش Peripheral استفاده کردیم
         val SERVICE_UUID: UUID = UUID.fromString("8C380000-10BD-4FDB-BAF6-90D19CA1FB24")
         val CHAR_UUID: UUID = UUID.fromString("8C380001-10BD-4FDB-BAF6-90D19CA1FB24")
+        
+        // Battery Service standard UUIDs
+        val BATTERY_SERVICE_UUID: UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
+        val BATTERY_LEVEL_CHAR_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805f9b34fb")
     }
 
-    // کالبک مربوط به اسکن کردن
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            Log.d("BleCentral", "Found device: ${device.address}")
             _status.value = "Found ${device.address}, connecting..."
-            
-            // متوقف کردن اسکن بعد از پیدا کردن دستگاه
             stopScanning()
-            
-            // اتصال به دستگاه
             bluetoothGatt = device.connectGatt(context, false, gattCallback)
         }
-
         override fun onScanFailed(errorCode: Int) {
             _status.value = "Scan failed: $errorCode"
-            Log.e("BleCentral", "Scan failed with error: $errorCode")
         }
     }
 
-    // کالبک مربوط به ارتباط GATT (کلاینت)
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                _status.value = "GATT Error: $status"
+                resetState()
+                gatt.close()
+                bluetoothGatt = null
+                return
+            }
+
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 _status.value = "Connected. Discovering services..."
-                // بعد از اتصال باید سرویس‌های دستگاه مقابل رو کشف کنیم
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 _status.value = "Disconnected"
-                bluetoothGatt?.close()
+                resetState()
+                gatt.close()
                 bluetoothGatt = null
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                _status.value = "Services discovered. Ready."
+                _status.value = "Services discovered."
                 
-                // فعال کردن نوتیفیکیشن برای دریافت پیام‌ها از Peripheral
-                val service = gatt.getService(SERVICE_UUID)
-                val characteristic = service?.getCharacteristic(CHAR_UUID)
-                if (characteristic != null) {
-                    gatt.setCharacteristicNotification(characteristic, true)
+                // Collect discovered services for the UI
+                val servicesList = gatt.services.map { service ->
+                    when (service.uuid) {
+                        SERVICE_UUID -> "Custom Message Service"
+                        BATTERY_SERVICE_UUID -> "Battery Service"
+                        else -> "Unknown: ${service.uuid.toString().substring(4,8)}" // Usually standard SIG services have distinct 16-bit UUIDs
+                    }
+                }
+                _discoveredServices.value = servicesList
+                
+                // 1. Read Battery Level
+                val batteryService = gatt.getService(BATTERY_SERVICE_UUID)
+                val batteryChar = batteryService?.getCharacteristic(BATTERY_LEVEL_CHAR_UUID)
+                if (batteryChar != null) {
+                    // Start an async read request. The result comes in onCharacteristicRead
+                    gatt.readCharacteristic(batteryChar)
+                }
+
+                // 2. Setup Notifications for the Custom Message Service
+                val msgService = gatt.getService(SERVICE_UUID)
+                val msgChar = msgService?.getCharacteristic(CHAR_UUID)
+                if (msgChar != null) {
+                    gatt.setCharacteristicNotification(msgChar, true)
+                    val cccdUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+                    val descriptor = msgChar.getDescriptor(cccdUuid)
+                    if (descriptor != null) {
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                    }
                 }
             }
         }
 
-        // وقتی Peripheral دیتایی رو از طریق نوتیفیکیشن ارسال می‌کنه
+        // Called when a readCharacteristic request finishes
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == BATTERY_LEVEL_CHAR_UUID) {
+                val batteryLevelValue = characteristic.value[0].toInt() and 0xFF
+                _batteryLevel.value = "$batteryLevelValue%"
+                Log.d("BleCentral", "Read battery: $batteryLevelValue%")
+            }
+        }
+
+        @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
@@ -91,9 +138,14 @@ class BleCentralManager(private val context: Context) {
             if (characteristic.uuid == CHAR_UUID) {
                 val message = String(characteristic.value)
                 _receivedMessage.value = message
-                Log.d("BleCentral", "Received message: $message")
             }
         }
+    }
+
+    private fun resetState() {
+        _receivedMessage.value = "No message yet"
+        _batteryLevel.value = "Unknown"
+        _discoveredServices.value = emptyList()
     }
 
     fun startScanning() {
@@ -102,23 +154,20 @@ class BleCentralManager(private val context: Context) {
             return
         }
 
-        // فیلتر برای پیدا کردن فقط دستگاه‌هایی که سرویس مدنظر رو تبلیغ می‌کنن
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
-            
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        resetState()
+        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
         _status.value = "Scanning for peripheral..."
         scanner.startScan(listOf(filter), settings, scanCallback)
     }
 
     fun stopScanning() {
-        scanner?.stopScan(scanCallback)
-        if (_status.value.startsWith("Scanning")) {
-            _status.value = "Scan stopped"
+        if (scanner != null && bluetoothAdapter?.isEnabled == true) {
+            scanner.stopScan(scanCallback)
+            if (_status.value.startsWith("Scanning")) {
+                _status.value = "Scan stopped"
+            }
         }
     }
 
@@ -129,12 +178,11 @@ class BleCentralManager(private val context: Context) {
 
         characteristic.value = message.toByteArray()
         characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        // ارسال پیام (Write) به Peripheral
         gatt.writeCharacteristic(characteristic)
-        Log.d("BleCentral", "Sent message: $message")
     }
 
     fun disconnect() {
         bluetoothGatt?.disconnect()
+        _status.value = "Disconnecting..."
     }
 }
